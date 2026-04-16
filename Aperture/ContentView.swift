@@ -8,9 +8,15 @@
 import SwiftUI
 import AVFoundation
 
+// MARK: - Color Palette
+// "Rustic Japanese" — moss greens, charcoal grays, warm paper whites.
+extension Color {
+    static let paperWhite = Color(red: 242/255, green: 237/255, blue: 227/255)
+    static let sumiCharcoal = Color(red: 43/255, green: 43/255, blue: 43/255)
+    static let mossGreen = Color(red: 107/255, green: 123/255, blue: 90/255)
+}
+
 // MARK: - Quote data model
-// A simple structure to hold a quote and its author.
-// Adding new authors later is as easy as adding new entries to the `allQuotes` list below.
 struct Quote: Identifiable {
     let id = UUID()
     let text: String
@@ -34,119 +40,224 @@ let allQuotes: [Quote] = [
     Quote(text: "It's better to have a short life that is full of what you like doing, than a long life spent in a miserable way.", author: "Alan Watts")
 ]
 
-// MARK: - Main view
+// MARK: - Ensō View
+// Uses the real ensō brush-stroke image (transparent PNG), revealed
+// progressively with a circular "wipe" mask (like a clock hand sweeping
+// around). The image starts ghostly and becomes bold as the session progresses.
+struct EnsoView: View {
+    let progress: CGFloat  // 0.0 (invisible) to 1.0 (fully drawn)
+
+    // Start very faint, end fully bold
+    private var inkOpacity: CGFloat {
+        0.10 + progress * 0.90
+    }
+
+    var body: some View {
+        Image("enso_circle")
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .opacity(inkOpacity)
+            .mask(
+                // AngularGradient acts as a circular wipe:
+                // a sharp edge sweeps clockwise, revealing more of the image.
+                // startAngle is set to ~7 o'clock to match where the
+                // ensō's brush stroke naturally begins.
+                AngularGradient(
+                    stops: [
+                        .init(color: .white, location: 0),
+                        .init(color: .white, location: max(0, progress - 0.01)),
+                        .init(color: .clear, location: progress),
+                        .init(color: .clear, location: 1)
+                    ],
+                    center: .center,
+                    startAngle: .degrees(90),
+                    endAngle: .degrees(450)
+                )
+            )
+            .animation(.linear(duration: 1), value: progress)
+    }
+}
+
+// MARK: - Main View
 struct ContentView: View {
-    // State — values SwiftUI watches. When any of these change, the UI redraws.
     @State private var selectedMinutes: Int = 10
     @State private var remainingSeconds: Int = 0
+    @State private var totalSessionSeconds: Int = 0  // saved at start for progress calc
     @State private var isRunning: Bool = false
     @State private var timer: Timer? = nil
     @State private var audioPlayer: AVAudioPlayer? = nil
-    @State private var displayedQuote: Quote? = nil  // when set, the quote screen is shown
+    @State private var displayedQuote: Quote? = nil
 
-    // Persistent storage — saved on the iPhone and survives app restarts.
     @AppStorage("totalSecondsMeditated") private var totalSecondsMeditated: Int = 0
+
+    // How far around the ensō has been drawn (0 = nothing, 1 = complete).
+    // Recalculates automatically whenever remainingSeconds changes.
+    var ensoProgress: CGFloat {
+        guard totalSessionSeconds > 0 else { return 0 }
+        return CGFloat(totalSessionSeconds - remainingSeconds) / CGFloat(totalSessionSeconds)
+    }
 
     var body: some View {
         ZStack {
+            // Full-bleed warm paper background
+            Color.paperWhite
+                .ignoresSafeArea()
+
             if let quote = displayedQuote {
-                // Quote screen — shown after a session completes.
                 quoteView(quote: quote)
+                    .transition(.opacity)
+            } else if isRunning {
+                meditationView
+                    .transition(.opacity)
             } else {
-                // Default screen — picker or active countdown.
-                mainView
+                setupView
+                    .transition(.opacity)
             }
         }
-        .padding()
         .onAppear {
             configureAudioSession()
         }
     }
 
-    // The picker / countdown / button view.
-    var mainView: some View {
-        VStack(spacing: 40) {
-            // Total time meditated — only shown when not actively running.
-            if !isRunning && totalSecondsMeditated > 0 {
+    // MARK: - Setup Screen
+    // Shown before a session starts: app title, lifetime stats, time picker, begin button.
+    var setupView: some View {
+        VStack(spacing: 0) {
+            // App title
+            Text("Aperture")
+                .font(.system(size: 32, weight: .light, design: .serif))
+                .foregroundColor(.sumiCharcoal)
+                .padding(.top, 70)
+
+            // Lifetime meditation total
+            if totalSecondsMeditated > 0 {
                 Text(formatTotalTime(totalSecondsMeditated))
                     .font(.system(size: 14, weight: .light, design: .serif))
-                    .foregroundColor(.secondary)
-                    .padding(.top, 20)
+                    .foregroundColor(.sumiCharcoal.opacity(0.4))
+                    .padding(.top, 8)
             }
 
             Spacer()
 
-            if isRunning {
-                Text(formatTime(remainingSeconds))
-                    .font(.system(size: 80, weight: .light, design: .serif))
-                    .monospacedDigit()
-            } else {
-                Picker("Minutes", selection: $selectedMinutes) {
-                    ForEach(1...120, id: \.self) { minute in
-                        Text("\(minute) min").tag(minute)
-                    }
+            // Time picker — scroll wheel, 1 to 120 minutes
+            Picker("Minutes", selection: $selectedMinutes) {
+                ForEach(1...120, id: \.self) { minute in
+                    Text("\(minute) min").tag(minute)
                 }
-                .pickerStyle(.wheel)
-                .frame(height: 200)
             }
+            .pickerStyle(.wheel)
+            .frame(height: 200)
 
             Spacer()
 
-            Button(action: {
-                if isRunning {
-                    stopTimer()
-                } else {
-                    startTimer()
-                }
-            }) {
-                Text(isRunning ? "Stop" : "Begin")
-                    .font(.system(size: 24, weight: .light, design: .serif))
-                    .foregroundColor(.white)
-                    .frame(width: 180, height: 60)
-                    .background(Color.black)
+            // Begin button — moss green pill
+            Button(action: startTimer) {
+                Text("Begin")
+                    .font(.system(size: 20, weight: .light, design: .serif))
+                    .foregroundColor(.paperWhite)
+                    .frame(width: 160, height: 54)
+                    .background(Color.mossGreen)
                     .clipShape(Capsule())
             }
-
-            Spacer()
+            .padding(.bottom, 60)
         }
     }
 
-    // The quote screen — shown when a session completes.
-    // Tap anywhere to dismiss and return to the picker.
+    // MARK: - Meditation Screen
+    // Shown during an active session: the ensō slowly draws itself
+    // with the countdown timer displayed in its centre.
+    var meditationView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            ZStack {
+                // The ensō — draws itself as the session progresses
+                EnsoView(progress: ensoProgress)
+                    .frame(width: 320, height: 320)
+
+                // Countdown timer inside the circle
+                Text(formatTime(remainingSeconds))
+                    .font(.system(size: 52, weight: .ultraLight, design: .serif))
+                    .foregroundColor(.sumiCharcoal)
+                    .monospacedDigit()
+            }
+
+            Spacer()
+
+            // Stop button — subtle, ghost-style pill
+            Button(action: cancelSession) {
+                Text("Stop")
+                    .font(.system(size: 18, weight: .light, design: .serif))
+                    .foregroundColor(.sumiCharcoal.opacity(0.5))
+                    .frame(width: 140, height: 48)
+                    .background(Color.sumiCharcoal.opacity(0.06))
+                    .clipShape(Capsule())
+            }
+            .padding(.bottom, 60)
+        }
+    }
+
+    // MARK: - Quote Screen
+    // Shown after a completed session: a random Alan Watts quote
+    // with the finished ensō as a subtle background watermark.
     func quoteView(quote: Quote) -> some View {
-        VStack(spacing: 30) {
-            Spacer()
+        ZStack {
+            // Completed ensō as a faint background element
+            EnsoView(progress: 1.0)
+                .frame(width: 340, height: 340)
+                .opacity(0.08)
 
-            Text("“\(quote.text)”")
-                .font(.system(size: 22, weight: .light, design: .serif))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 20)
+            VStack(spacing: 24) {
+                Spacer()
 
-            Text("— \(quote.author)")
-                .font(.system(size: 16, weight: .regular, design: .serif))
-                .italic()
-                .foregroundColor(.secondary)
+                Text("\u{201C}\(quote.text)\u{201D}")
+                    .font(.system(size: 20, weight: .light, design: .serif))
+                    .foregroundColor(.sumiCharcoal)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(6)
+                    .padding(.horizontal, 36)
 
-            Spacer()
+                Text("— \(quote.author)")
+                    .font(.system(size: 15, weight: .regular, design: .serif))
+                    .italic()
+                    .foregroundColor(.sumiCharcoal.opacity(0.5))
 
-            Text("Tap to return")
-                .font(.system(size: 14, weight: .light, design: .serif))
-                .foregroundColor(.secondary)
-                .padding(.bottom, 40)
+                Spacer()
+
+                Text("Tap to return")
+                    .font(.system(size: 13, weight: .light, design: .serif))
+                    .foregroundColor(.sumiCharcoal.opacity(0.3))
+                    .padding(.bottom, 50)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle()) // makes the whole area tappable
+        .contentShape(Rectangle())
         .onTapGesture {
-            displayedQuote = nil
+            withAnimation(.easeInOut(duration: 0.5)) {
+                displayedQuote = nil
+            }
         }
     }
 
-    // MARK: - Timer logic
+    // MARK: - Timer Logic
 
+    // Start a new meditation session.
+    // The timer begins counting down immediately, but the dong sound
+    // plays after a 2-second delay to give you time to close your eyes.
     func startTimer() {
-        remainingSeconds = selectedMinutes * 60
-        isRunning = true
-        playDong() // dong at start
+        totalSessionSeconds = selectedMinutes * 60
+        remainingSeconds = totalSessionSeconds
+
+        withAnimation(.easeInOut(duration: 0.5)) {
+            isRunning = true
+        }
+
+        // 2-second delay before the opening dong
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            playDong()
+        }
+
+        // Countdown — ticks every second
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
             if remainingSeconds > 0 {
                 remainingSeconds -= 1
@@ -156,19 +267,26 @@ struct ContentView: View {
         }
     }
 
-    func stopTimer() {
+    // User taps Stop — cancel the session (no credit for partial sessions).
+    func cancelSession() {
         timer?.invalidate()
         timer = nil
-        isRunning = false
+        withAnimation(.easeInOut(duration: 0.5)) {
+            isRunning = false
+        }
     }
 
-    // Called when the timer reaches zero — plays the dong, shows a random quote,
-    // adds the session to the lifetime total, and resets the timer state.
+    // Timer reaches zero — session complete!
+    // Plays the closing dong, records the time, and shows a quote.
     func completeSession() {
+        timer?.invalidate()
+        timer = nil
         playDong()
-        totalSecondsMeditated += selectedMinutes * 60  // only completed sessions count
-        displayedQuote = allQuotes.randomElement()
-        stopTimer()
+        totalSecondsMeditated += selectedMinutes * 60
+        withAnimation(.easeInOut(duration: 0.8)) {
+            isRunning = false
+            displayedQuote = allQuotes.randomElement()
+        }
     }
 
     func formatTime(_ seconds: Int) -> String {
@@ -177,7 +295,6 @@ struct ContentView: View {
         return String(format: "%02d:%02d", minutes, secs)
     }
 
-    // Format the lifetime total nicely, e.g. "47 minutes meditated" or "3h 12m meditated".
     func formatTotalTime(_ seconds: Int) -> String {
         let totalMinutes = seconds / 60
         if totalMinutes < 60 {
